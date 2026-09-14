@@ -6,7 +6,7 @@ Cross-Script Thread Recovery on Wikipedia Talk Pages
 
 Trains on Greek talk pages, predicts conversation membership on Chinese ones.
 
-Usage (the form the grader uses):
+Usage:
     python3 solution.py <public_data_dir> <output_submission_csv>
 
 Both arguments are optional: with none given the script looks for the data next
@@ -24,20 +24,22 @@ and Chinese is not written with spaces.  Timing keeps raw seconds alongside
 page-relative ranks, because the venue -- and so the clock -- is the same on
 both sides of the split.
 
-Determinism: fixed seeds, a fixed LightGBM thread count, stable sorts
-throughout.  Re-running produces a byte-identical submission.
+Every quantity that controls how much work is done is a module-level
+constant: the boosting rounds, the candidate width, the thread count and the
+seeds.  There are no clock reads and no capability probes, so the plan is the
+same on every host and re-running produces a byte-identical submission.
 """
 import sys
 import os
 import re
-import time
 import numpy as np
 import pandas as pd
+import lightgbm as lgb
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 SEED = 7
-NUM_THREADS = 8       # fixed, not cpu_count(): LightGBM is only bitwise
-                      # reproducible for a fixed thread count
+NUM_THREADS = 8       # a constant, never derived from the host: the booster is
+                      # only bitwise reproducible at a fixed thread count
 _COMMON = dict(learning_rate=0.05, feature_fraction=0.8, bagging_fraction=0.8,
                bagging_freq=1, lambda_l2=1.0, verbose=-1, num_threads=NUM_THREADS,
                seed=SEED, bagging_seed=SEED + 1, feature_fraction_seed=SEED + 2,
@@ -96,6 +98,9 @@ LAT=re.compile(r"[A-Za-z]")
 DIG=re.compile(r"[0-9]")
 NUMTOK=re.compile(r"\d+")
 LATTOK=re.compile(r"[A-Za-z][A-Za-z0-9_\-]{2,}")
+# sentence-final punctuation, ASCII and full-width, written as escapes so the
+# source file stays pure ASCII
+ENDPUNCT=".!?;:" + "\u3002\uff01\uff1f\uff1b\uff1a\u00b7"
 
 def _pct(a):
     a=np.asarray(a,dtype=float); n=len(a)
@@ -187,7 +192,7 @@ def page_arrays(g, VZ):
         has_tmpl=np.array([1.0 if "{{" in x else 0.0 for x in txt]),
         has_link=np.array([1.0 if "[[" in x else 0.0 for x in txt]),
         nlines=np.array([x.count("\n") for x in txt],dtype=float),
-        endpunct=np.array([1.0 if x[-1:] in ".!?;:。！？；：·" else 0.0 for x in txt]),
+        endpunct=np.array([1.0 if x[-1:] in ENDPUNCT else 0.0 for x in txt]),
         n_num=np.array([len(s) for s in numsets],dtype=float),
         n_lat=np.array([len(s) for s in latsets],dtype=float),
     )
@@ -376,39 +381,22 @@ class ZBlend(object):
 
 
 def train_model(X, Y, group_sizes):
-    """LightGBM if present; sklearn's HistGradientBoosting is a drop-in fallback.
-    Only the ARGMAX over a candidate set is ever used, so any monotone score works."""
-    try:
-        import lightgbm as lgb
-    except Exception as exc:                                    # pragma: no cover
-        sys.stderr.write("LightGBM unavailable (%s); using the sklearn fallback\n" % exc)
-        from sklearn.ensemble import HistGradientBoostingClassifier
+    """Fit every booster in MODELS and blend them.
 
-        class _Wrap(object):
-            def __init__(self, m):
-                self.m = m
-
-            def predict(self, x, raw_score=True):
-                return self.m.predict_proba(x)[:, 1]
-
-        clf = HistGradientBoostingClassifier(
-            max_iter=400, learning_rate=0.05, max_leaf_nodes=31,
-            min_samples_leaf=40, l2_regularization=1.0, random_state=SEED)
-        clf.fit(X, Y)
-        return _Wrap(clf)
-
+    The list is a fixed constant, so the same boosters are fitted for the same
+    number of rounds on every host."""
     boosters = []
     for spec in MODELS:
         listwise = spec["params"]["objective"] != "binary"
         ds = lgb.Dataset(X, label=Y, feature_name=FEATNAMES, free_raw_data=False,
                          group=(group_sizes if listwise else None))
         boosters.append(lgb.train(spec["params"], ds, num_boost_round=spec["rounds"]))
-        print("    trained %s (%d rounds)" % (spec["name"], spec["rounds"]))
+        print("    fitted %s (%d rounds)" % (spec["name"], spec["rounds"]))
     return ZBlend(boosters)
 
 
 def heuristic_labels(g):
-    """Cheap always-valid fallback: a short message carrying no clock-style
+    """Cheap always-valid labelling: a short message carrying no clock-style
     signature opens a section, and everything after it joins that section."""
     txt = g["text"].tolist()
     L = np.array([len(x) for x in txt], dtype=float)
@@ -420,7 +408,6 @@ def heuristic_labels(g):
 
 
 def main(argv):
-    t0 = time.time()
     data = find_data_dir(argv)
     out = argv[2] if len(argv) > 2 and argv[2] else os.path.join("working", "submission.csv")
     print("data dir :", data)
@@ -444,18 +431,18 @@ def main(argv):
             if d and not os.path.isdir(d):
                 os.makedirs(d, exist_ok=True)
             sub[["query_id", "conversation_id"]].to_csv(p, index=False)
-        print("[%5.0fs] wrote %s (%s)" % (time.time() - t0, out, tag))
+        print("wrote %s (%s)" % (out, tag))
 
-    # --- a valid submission first, so the graded path is never empty on a crash
+    # --- a valid labelling is written first, so the output path is never empty
     rows = []
     for f, g in test.groupby("file_id", sort=True):
         g = g.sort_values("msg_index", kind="stable")
         rows.append(pd.DataFrame(
             {"file_id": f, "msg_index": g.msg_index.values,
              "conversation_id": ["%s#h%d" % (f, c) for c in heuristic_labels(g)]}))
-    write(pd.concat(rows, ignore_index=True), "heuristic fallback")
+    write(pd.concat(rows, ignore_index=True), "opening heuristic")
 
-    # --- training rows: replay every Greek page under teacher forcing
+    # --- training rows: replay every training page under teacher forcing
     vz_train = build_vectorizers(train["text"].tolist(), seed=SEED)
     Xs, Ys, groups = [], [], []
     for f, g in train.groupby("file_id", sort=True):
@@ -468,20 +455,21 @@ def main(argv):
     X = np.concatenate(Xs)
     Y = np.concatenate(Ys)
     group_sizes = np.concatenate(groups)
-    print("[%5.0fs] training rows %s, positives %d, groups %d"
-          % (time.time() - t0, X.shape, int(Y.sum()), len(group_sizes)))
+    print("training rows %s, positives %d, groups %d"
+          % (X.shape, int(Y.sum()), len(group_sizes)))
 
     booster = train_model(X, Y, group_sizes)
-    print("[%5.0fs] model trained" % (time.time() - t0))
+    print("model fitted")
 
-    # --- test: the SAME procedure, re-fitted on the Chinese corpus.  No vocabulary
-    #     ever crosses the split; only the page-relative statistics carry over.
+    # --- the SAME procedure, re-fitted on the text of the pages being labelled.
+    #     No vocabulary is ever shared between the two sides; only the
+    #     page-relative statistics carry over.
     vz_test = build_vectorizers(test["text"].tolist(), seed=SEED)
     names, Fs = [], []
     for f, g in test.groupby("file_id", sort=True):
         names.append(f)
         Fs.append(page_arrays(g.sort_values("msg_index", kind="stable"), vz_test))
-    print("[%5.0fs] test pages encoded" % (time.time() - t0))
+    print("pages encoded")
 
     rows = []
     for f, a in zip(names, decode_batch(Fs, booster)):
@@ -492,10 +480,9 @@ def main(argv):
     pred = pd.concat(rows, ignore_index=True)
     n_conv = int(pred.groupby("file_id")["conversation_id"].nunique().sum())
     sizes = pred.groupby(["file_id", "conversation_id"]).size()
-    print("[%5.0fs] %d conversations predicted, median size %.1f"
-          % (time.time() - t0, n_conv, sizes.median()))
+    print("%d conversations predicted, median size %.1f" % (n_conv, sizes.median()))
     write(pred, "model")
-    print("[%5.0fs] done" % (time.time() - t0))
+    print("done")
 
 
 if __name__ == "__main__":
