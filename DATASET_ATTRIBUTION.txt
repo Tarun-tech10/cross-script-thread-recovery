@@ -1,0 +1,28 @@
+DATA ATTRIBUTION
+================
+
+The dataset in CST.zip is derived from WikiConv:
+
+    Yiqing Hua, Cristian Danescu-Niculescu-Mizil, Dario Taraborelli,
+    Nithum Thain, Jeffery Sorensen and Lucas Dixon.
+    "WikiConv: A Corpus of the Complete Conversational History of a Large
+    Online Collaborative Community."
+    EMNLP 2018.
+
+Greek and Chinese Wikipedia releases, both distributed under
+Creative Commons Attribution 4.0 International (CC BY 4.0).
+
+The conversation structure used as the labels is the corpus's own reply graph,
+reconstructed by its authors from the talk-page revision history. It is not a
+rater's opinion and not a model's output.
+
+Comment text is Wikipedia editor content, licensed
+Creative Commons Attribution-ShareAlike (CC BY-SA).
+    https://creativecommons.org/licenses/by-sa/4.0/
+
+Editor handles have been replaced in the message text by the token <name>, and
+IP addresses by <ip>. Author identity, indentation and section headings are not
+present in the files.
+
+This repository redistributes the derived files unmodified from the challenge
+archive, for the purpose of reproducing the solution in solution.py.

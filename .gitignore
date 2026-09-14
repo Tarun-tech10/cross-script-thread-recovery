@@ -1,0 +1,6 @@
+CST_DATA/
+working/
+run.log
+run.err
+__pycache__/
+*.pyc

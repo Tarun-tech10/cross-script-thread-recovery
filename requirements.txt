@@ -1,0 +1,5 @@
+# Tested with these versions; nearby releases are fine.
+numpy>=1.24
+pandas>=1.5
+scikit-learn>=1.2
+lightgbm>=4.0
