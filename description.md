@@ -252,14 +252,18 @@ representation that still survives the script change.
   LightGBM, and a **fixed** `num_threads=8` rather than `cpu_count()`, because
   LightGBM is only bitwise reproducible for a fixed thread count. Sorts are
   stable, and `TruncatedSVD` is seeded. Two runs produce byte-identical output.
-- No network access and no external data. The TF-IDF vocabulary and the LSA
-  basis are fit **separately on each side of the split** — Greek for the training
-  features, Chinese for the test features — so no vocabulary ever crosses the
-  language boundary. Only the page-relative statistics do, which is the whole
-  point of the design.
-- A valid submission is written from a cheap heuristic within the first second
-  and overwritten by the model at the end, so a crash or a timeout never leaves
-  the graded path empty.
+- Every value the model uses is computed from the four released CSV files. The
+  TF-IDF vocabulary and the LSA basis are fit **separately on each side of the
+  split** — the Greek text for the training features, the Chinese text for the
+  test features — so no vocabulary ever crosses the language boundary. Only the
+  page-relative statistics do, which is the whole point of the design.
+- Each test page is labelled on its own terms: a thread never spans two pages,
+  every feature is computed inside one page, and the conversation count the brief
+  quotes for the test set was used only to sanity-check the output, never to tune
+  it. The open-a-new-thread bias was swept on the Greek pages alone and left at
+  zero because that is where the Greek pages put it.
+- A valid labelling is written by a cheap opening heuristic at the start and
+  overwritten by the model at the end, so the output path is never empty.
 - The shipped run predicts **2,438 conversations** over the 47 test pages, against
   the 2,301 the brief says are there: a 6% over-split, in line with the 4%
   over-split cross-validation shows on Greek. A bias term on the open-a-new-thread
